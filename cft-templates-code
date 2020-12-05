@@ -1,0 +1,799 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create  CodePipeline using the CFN .
+Parameters:
+  CFNTemplateRepoName:
+    Type: String
+    Description: Name of the repo which contains CFN template.
+    Default: CFTPipeLine
+  ArtifactStoreS3Location:
+    Type: String
+    Description: Name of the S3 bucket to store CodePipeline artificat.
+    Default: cfndeploy
+  Email:
+    Description: Email address where CodePipeline sends pipeline notifications
+    Type: String
+  GitHubToken:
+    NoEcho: true
+    Type: String
+    Description: Github Token generated from
+    
+  GitHubRepoOwner:
+    Type: String
+    Description: Owner of the GitHub Repository
+    
+  GitHubRepoName:
+    Type: String
+    Description: Name of the GitHub Repository
+    
+  GitHubBranch:
+    Type: String
+    Description: Name of branch to use inside the GitHub Repository
+    Default: master
+  SSHKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key for the EC2 instances
+    Default: test-default
+    AllowedValues:
+      - test-default
+      - test-ec2-default 
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: Instance Type for EC2 instance
+  VPCID:
+    Description: Specifies the VPCID.
+    Type: String
+    
+  
+  SubnetID:
+    Description: The  Subnet IDs for the Subnet group
+    Type: String
+    
+
+  AmazonAMI:
+    Description: Specifies the application AMI.
+    Type: AWS::EC2::Image::Id
+    
+Resources:
+    #### SECURITY GROUPS ####
+  EC2SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Allowing Internal SSH and application ports - 22,80'
+      VpcId: !Ref VPCID
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ App-EC2-SG, dev] ]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+  APPInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp2
+            Encrypted: false
+              
+      ImageId: !Ref AmazonAMI
+      #InstanceInitiatedShutdownBehavior: stop
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref SSHKeyName
+      Monitoring: false
+      SubnetId: !Ref SubnetID
+      
+      SecurityGroupIds:
+        - !Ref EC2SG
+      Tenancy: default
+      Tags:
+        -
+          Key: Name
+          Value: Testapp
+        -
+          Key: app
+          Value: testingapp
+
+
+  CodeDeployTrustRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: "1"
+            Effect: Allow
+            Principal:
+              Service:
+                - codedeploy.us-east-1.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+
+  CodeDeployRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeDeployPolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Resource: "*"
+            Action:
+              - ec2:Describe*
+          - Effect: Allow
+            Resource: "*"
+            Action:
+              - autoscaling:CompleteLifecycleAction
+              - autoscaling:DeleteLifecycleHook
+              - autoscaling:DescribeLifecycleHooks
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:PutLifecycleHook
+              - autoscaling:RecordLifecycleActionHeartbeat
+      Roles:
+        - !Ref CodeDeployTrustRole
+
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub CodeBuildRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /service-role/
+      Policies:
+        - PolicyName: "CodeBuildAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "cloudformation:Get*"
+                  - "cloudformation:Describe*"
+                  - "cloudformation:List*"
+                Resource: '*'
+              - Effect: "Allow"
+                Action:
+                  - "codecommit:ListBranches"
+                  - "codecommit:ListRepositories"
+                  - "codecommit:BatchGetRepositories"
+                  - "codecommit:Get*"
+                  - "codecommit:GitPull"
+                Resource:
+                  - Fn::Sub: arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CFNTemplateRepoName}
+              - Effect: "Allow"
+                Action:
+                  - "ec2:Describe*"
+                  - "cloudformation:ValidateTemplate"
+                  - "elasticloadbalancing:Describe*"
+                  - "autoscaling:Describe*"
+                  - "iam:Get*"
+                  - "iam:List*"
+                  - "logs:Describe*"
+                  - "logs:Get*"
+                  - "tag:Get*"
+                Resource:
+                  - "*"
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+              - Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:ListBucket"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::codepipeline-${AWS::Region}-*
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}/*
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub CodeBuildCFN-${AWS::StackName}
+      Description: Build to validate and copy CFN templates
+      ServiceRole: !GetAtt [ CodeBuildRole, Arn ]
+      Artifacts:
+        Type: S3
+        Location: !Ref ArtifactStoreS3Location
+        Name: !Sub CodeBuildCFN-${AWS::StackName}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        EnvironmentVariables:
+          - Name: TEMPLATE_BUCKET
+            Value: !Ref ArtifactStoreS3Location
+          - Name: TEMPLATE_PREFIX
+            Value: codebuild
+      Source:
+        Location: !Sub https://git-codecommit.us-east-1.amazonaws.com/v1/repos/${CFNTemplateRepoName}
+        Type: CODECOMMIT
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 15
+      Tags:
+        - Key: Name
+          Value: !Sub CodeBuildCFN-${AWS::StackName}
+
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: Allow
+              Principal:
+                Service:
+                  - "codepipeline.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        Path: "/"
+        Policies:
+          -
+            PolicyName: CodePipelinePolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                -
+                  Effect: Allow
+                  Action:
+                    - "s3:GetObject"
+                    - "s3:GetObjectVersion"
+                    - "s3:GetBucketVersioning"
+                  Resource: "*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "s3:PutObject"
+                  Resource:
+                    - "arn:aws:s3:::codepipeline*"
+                    - "arn:aws:s3:::elasticbeanstalk*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "codecommit:CancelUploadArchive"
+                    - "codecommit:GetBranch"
+                    - "codecommit:GetCommit"
+                    - "codecommit:GetUploadArchiveStatus"
+                    - "codecommit:UploadArchive"
+                  Resource: "*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "codedeploy:CreateDeployment"
+                    - "codedeploy:GetApplicationRevision"
+                    - "codedeploy:GetDeployment"
+                    - "codedeploy:GetDeploymentConfig"
+                    - "codedeploy:RegisterApplicationRevision"
+                  Resource: "*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "elasticbeanstalk:*"
+                    - "ec2:*"
+                    - "elasticloadbalancing:*"
+                    - "autoscaling:*"
+                    - "cloudwatch:*"
+                    - "s3:*"
+                    - "sns:*"
+                    - "cloudformation:*"
+                    - "rds:*"
+                    - "sqs:*"
+                    - "ecs:*"
+                    - "iam:PassRole"
+                  Resource: "*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "lambda:InvokeFunction"
+                    - "lambda:ListFunctions"
+                  Resource: "*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "opsworks:CreateDeployment"
+                    - "opsworks:DescribeApps"
+                    - "opsworks:DescribeCommands"
+                    - "opsworks:DescribeDeployments"
+                    - "opsworks:DescribeInstances"
+                    - "opsworks:DescribeStacks"
+                    - "opsworks:UpdateApp"
+                    - "opsworks:UpdateStack"
+                  Resource: "*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "cloudformation:CreateStack"
+                    - "cloudformation:DeleteStack"
+                    - "cloudformation:DescribeStacks"
+                    - "cloudformation:UpdateStack"
+                    - "cloudformation:CreateChangeSet"
+                    - "cloudformation:DeleteChangeSet"
+                    - "cloudformation:DescribeChangeSet"
+                    - "cloudformation:ExecuteChangeSet"
+                    - "cloudformation:SetStackPolicy"
+                    - "cloudformation:ValidateTemplate"
+                    - "iam:PassRole"
+                  Resource: "*"
+                -
+                  Effect: Allow
+                  Action:
+                    - "codebuild:BatchGetBuilds"
+                    - "codebuild:StartBuild"
+                  Resource: "*"
+
+  CloudFormationRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub CloudFormationRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "cloudformation.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: "CloudFormationAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}/*
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+
+  CodePipelineSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref Email
+          Protocol: email
+          
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: nodetestingapp
+      ComputePlatform: Server
+      
+  CodeDeployhealthconfiguration: 
+    Type: AWS::CodeDeploy::DeploymentConfig
+    Properties: 
+      MinimumHealthyHosts: 
+        Type: "FLEET_PERCENT"
+        Value: 75
+      
+  DeploymentGroup: 
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties: 
+      ApplicationName:  !Ref CodeDeployApplication
+      DeploymentConfigName: CodeDeployDefault.AllAtOnce
+      DeploymentGroupName: nodeappdeploy
+     
+      Ec2TagFilters: 
+        - 
+          Key: app
+          Value: testingapp
+          Type: "KEY_AND_VALUE"
+      ServiceRoleArn: 
+        Fn::GetAtt: [ CodeDeployTrustRole, Arn ]
+
+  DeployPipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      Name: !Sub CFN-${AWS::StackName}
+      RoleArn: !GetAtt [ CodePipelineRole, Arn ]
+      Stages:
+        -
+          Name: Source
+          Actions:
+            -
+              Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              OutputArtifacts:
+                -
+                  Name: CFNSourceOutput
+              Configuration:
+                Owner: !Ref GitHubRepoOwner
+                Repo: !Ref GitHubRepoName
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: CFNSourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              OutputArtifacts:
+                - Name: CFNCodeBuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+             
+        - Name: Deploy 
+          Actions: 
+            - Name: DeployAction 
+              InputArtifacts: 
+                - Name: CFNSourceOutput 
+              ActionTypeId: 
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CodeDeploy
+              Configuration: 
+                ApplicationName: !Ref CodeDeployApplication 
+                DeploymentGroupName: !Ref DeploymentGroup 
+              RunOrder: 1
+        
+                
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: ArtifactStoreS3Location              
+
+=====================================================================================
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create  CodePipeline using the CFN .
+Parameters:
+  CFNTemplateRepoName:
+    Type: String
+    Description: Name of the repo which contains CFN template.
+    Default: CFTPipeLine
+  ArtifactStoreS3Location:
+    Type: String
+    Description: Name of the S3 bucket to store CodePipeline artificat.
+    Default: cfnbucket15
+  Email:
+    Description: Email address where CodePipeline sends pipeline notifications
+    Type: String
+     
+Resources:
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub CodeBuildRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /service-role/
+      Policies:
+        - PolicyName: "CodeBuildAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "cloudformation:Get*"
+                  - "cloudformation:Describe*"
+                  - "cloudformation:List*"
+                Resource: '*'
+              - Effect: "Allow"
+                Action:
+                  - "codecommit:ListBranches"
+                  - "codecommit:ListRepositories"
+                  - "codecommit:BatchGetRepositories"
+                  - "codecommit:Get*"
+                  - "codecommit:GitPull"
+                Resource:
+                  - Fn::Sub: arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CFNTemplateRepoName}
+              - Effect: "Allow"
+                Action:
+                  - "ec2:Describe*"
+                  - "cloudformation:ValidateTemplate"
+                  - "elasticloadbalancing:Describe*"
+                  - "autoscaling:Describe*"
+                  - "iam:Get*"
+                  - "iam:List*"
+                  - "logs:Describe*"
+                  - "logs:Get*"
+                  - "tag:Get*"
+                Resource:
+                  - "*"
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+              - Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:ListBucket"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::codepipeline-${AWS::Region}-*
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}/*
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub CodeBuildCFN-${AWS::StackName}
+      Description: Build to validate and copy CFN templates
+      ServiceRole: !GetAtt [ CodeBuildRole, Arn ]
+      Artifacts:
+        Type: S3
+        Location: !Ref ArtifactStoreS3Location
+        Name: !Sub CodeBuildCFN-${AWS::StackName}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        EnvironmentVariables:
+          - Name: TEMPLATE_BUCKET
+            Value: !Ref ArtifactStoreS3Location
+          - Name: TEMPLATE_PREFIX
+            Value: codebuild
+      Source:
+        Location: !Sub https://git-codecommit.us-east-1.amazonaws.com/v1/repos/${CFNTemplateRepoName}
+        Type: CODECOMMIT
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 15
+      Tags:
+        - Key: Name
+          Value: !Sub CodeBuildCFN-${AWS::StackName}
+
+
+  CodePipelineRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub CodePipelineRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: "CodePipelineAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:DeleteObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:ListBucket"
+                  - "s3:PutObject"
+                  - "s3:GetBucketPolicy"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}/*
+              - Effect: "Allow"
+                Action:
+                  - "sns:Publish"
+                Resource: '*'
+              - Effect: "Allow"
+                Action:
+                  - "codecommit:ListBranches"
+                  - "codecommit:ListRepositories"
+                  - "codecommit:BatchGetRepositories"
+                  - "codecommit:Get*"
+                  - "codecommit:GitPull"
+                  - "codecommit:UploadArchive"
+                Resource: !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CFNTemplateRepoName}
+              - Effect: "Allow"
+                Action:
+                  - "cloudformation:CreateChangeSet"
+                  - "cloudformation:CreateStack"
+                  - "cloudformation:CreateUploadBucket"
+                  - "cloudformation:DeleteStack"
+                  - "cloudformation:Describe*"
+                  - "cloudformation:List*"
+                  - "cloudformation:UpdateStack"
+                  - "cloudformation:ValidateTemplate"
+                  - "cloudformation:ExecuteChangeSet"
+                Resource: '*'
+              - Effect: "Allow"
+                Action:
+                  - "codebuild:StartBuild"
+                  - "codebuild:BatchGetBuilds"
+                Resource: '*'
+              - Effect: "Allow"
+                Action:
+                  - "iam:PassRole"
+                Resource:
+                  - Fn::Sub: arn:aws:iam::${AWS::AccountId}:role/CloudFormationRole-${AWS::StackName}  
+
+
+  CloudFormationRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub CloudFormationRole-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "cloudformation.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: "CloudFormationAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}
+                  - Fn::Sub: arn:aws:s3:::${ArtifactStoreS3Location}/*
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+
+  CodePipelineSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref Email
+          Protocol: email
+
+
+  DeployPipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      Name: !Sub CFN-${AWS::StackName}
+      RoleArn: !GetAtt [ CodePipelineRole, Arn ]
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: CFNTemplateSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: CFNSourceOutput
+              Configuration:
+                BranchName: master
+                RepositoryName: !Ref CFNTemplateRepoName
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: CodeBuild
+              InputArtifacts:
+                - Name: CFNSourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              OutputArtifacts:
+                - Name: CFNCodeBuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+        - Name: Evaluation
+          Actions:              
+            - Name: CreateStageCFNStack
+              InputArtifacts:
+                - Name: CFNCodeBuildOutput
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              OutputArtifacts:
+                - Name: CreatedStageCFNStack
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt [ CloudFormationRole, Arn ]
+                Capabilities: CAPABILITY_NAMED_IAM
+                StackName: !Sub Eval-${AWS::StackName}
+                TemplateConfiguration: CFNCodeBuildOutput::config-eval.json                
+                TemplatePath: CFNCodeBuildOutput::CFTCodePipeline.yml
+              RunOrder: 1
+        - Name: Production
+          Actions:
+            - Name: CreateProdChangeSet
+              InputArtifacts:
+                - Name: CFNCodeBuildOutput
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              OutputArtifacts:
+                - Name: CreatedProdChangeSet
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                ChangeSetName: ProdCBChangeSet
+                RoleArn: !GetAtt [ CloudFormationRole, Arn ]
+                Capabilities: CAPABILITY_NAMED_IAM
+                StackName: !Sub Prod-${AWS::StackName}
+                TemplateConfiguration: CFNCodeBuildOutput::config-prod.json                
+                TemplatePath: CFNCodeBuildOutput::CFTCodePipeline.yml
+              RunOrder: 1
+            - Name: ProdApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: 1
+                Provider: Manual
+              Configuration:
+                NotificationArn: !Ref CodePipelineSNSTopic
+                CustomData: Approve deployment in production.
+              RunOrder: 2
+            - Name: DeployProduction
+              InputArtifacts:
+                - Name: CreatedProdChangeSet
+              #Region: us-east-2
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: ProdCBChangeSet
+                StackName: !Sub Prod-${AWS::StackName}
+              RunOrder: 3
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: ArtifactStoreS3Location              
+
