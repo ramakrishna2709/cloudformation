@@ -795,5 +795,1169 @@ Resources:
       ArtifactStore:
         Type: S3
         Location:
-          Ref: ArtifactStoreS3Location              
+          Ref: ArtifactStoreS3Location   
+          
+          
+  ===================================================================================================================================
+  AWSTemplateFormatVersion: 2010-09-09
+Description: Pipeline  generated with CFT Code
+  
+Parameters:
+  
+  GitHubOwner:
+    Description: 'The owner of the GitHub repository.'
+    Type: String
+    Default: dummy
+
+  GitHubOAuthToken:
+    Description: 'The OAuthToken of the GitHub user.'
+    Type: String
+    Default: ababababa
+
+  GitHubRepo:
+    Description: 'The GitHub repository.'
+    Type: String 
+    Default: AWSCodePipeline
+
+  GitHubBranch:
+    Description: 'The GitHub repository.'
+    Type: String 
+    Default: master
+  
+  BuildArtifacts:
+    Description: 'artifact store s3 bucket'
+    Type: String 
+    Default: BuildSourceArtifact
+  
+  Environment:
+    Type: String
+    Description: Specifies the application environment.
+    Default: dev
+
+  
+  CFNTemplatesPath:
+    Description: Relative path for CloudFormation templates
+    Type: String
+    Default: /
+
+  CodePipelineArtifactsS3BucketName:
+    Description: Name of the CodePipeline S3 bucket to create to store temporary build artifacts
+    Type: String
+    Default: mycftpipelineteststore
+
+  Namespace:
+    Description: A prefix used to name provisioned resources
+    Type: String
+    Default: cfn
+  
+Mappings:
+  
+  AppToEnvironmentHosts:
+    Evaluation:
+      APPInstance1: ev-u-app-instance-01
+      APPInstance2: ev-u-app-instance-02
+
+  InstanceType:
+    Evaluation:
+      APP: 't2.micro'
+
+    Production:
+      APP: 't2.micro'
+
+  EnvironmentToAmazonAMI:
+    Evaluation:
+      HVM64: ami-7sdskdksdkk# n.virginia  
+
+  
+#Conditions:
+  
+Resources:
+
+ #================================================================================
+# codepipeline s3 bucket
+#================================================================================
+  CodePipelineArtifactsS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref CodePipelineArtifactsS3BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+    
+    ###bucket policy
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodePipelineArtifactsS3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Action:
+              - "s3:*"
+            Resource:
+            - !Sub "arn:aws:s3:::${CodePipelineArtifactsS3Bucket}/*"
+            Principal: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+      
+#================================================================================
+# IAM Service Role - AWS CodePipeline
+#================================================================================
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-CodePipelineRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Action:
+            - 'sts:AssumeRole'
+          Effect: Allow
+          Principal:
+            Service:
+              - codepipeline.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - 's3:*'
+                - 'codecommit:*'
+                - 'codebuild:*'
+                - 'codedeploy:*'
+                - 'cloudformation:CreateStack'
+                - 'cloudformation:DescribeStacks'
+                - 'cloudformation:DeleteStack'
+                - 'cloudformation:UpdateStack'
+                - 'cloudformation:CreateChangeSet'
+                - 'cloudformation:ExecuteChangeSet'
+                - 'cloudformation:DeleteChangeSet'
+                - 'cloudformation:DescribeChangeSet'
+                - 'cloudformation:SetStackPolicy'
+                - 'iam:PassRole'
+                - 'sns:Publish'
+                Effect: Allow
+                Resource: '*'
+
+      
+#================================================================================
+# IAM Policies for CodePipeline and CodeBuild
+#================================================================================
+
+  CodeBuildLogsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-CodeBuildLogsPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 'logs:CreateLogGroup'
+            - 'logs:CreateLogStream'
+            - 'logs:PutLogEvents'
+          Resource: "*"
+      Roles:
+        - !Ref CFNCodeBuildServiceRole
+        - !Ref DeploymentCodeBuildServiceRole
+
+  CodePipelineArtifactsS3BucketPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-CodePipelineArtifactsS3BucketPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 's3:List*'
+          Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactsS3Bucket}'
+      Roles:
+        - !Ref CFNCodeBuildServiceRole
+        - !Ref DeploymentCodeBuildServiceRole
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineArtifactsS3BucketObjectsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-CodePipelineArtifactsS3BucketObjectsPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 's3:Get*'
+            - 's3:Put*'
+          Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactsS3Bucket}/*'
+      Roles:
+        - !Ref CFNCodeBuildServiceRole
+        - !Ref DeploymentCodeBuildServiceRole
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineBasePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-CodePipelineBase"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 'iam:PassRole'
+            - 'codepipeline:*'
+          Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineCodeBuildAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-CodePipelineCodeBuildAccessPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 'codebuild:StartBuild'
+            - 'codebuild:BatchGetBuilds'
+          Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineCodeCommitAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${Namespace}-CodePipelineCodeCommitAccessPolicy'
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 'codecommit:*'
+          Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+  CloudformationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: cloudformation.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess 
+
+#================================================================================
+#  Codecommit
+#================================================================================
+  CodeRepository:
+    Type: 'AWS::CodeCommit::Repository'
+    Properties:
+      RepositoryName: !Ref 'AWS::StackName'
+    
+#================================================================================
+# CodeBuild validation
+#================================================================================
+  CFNCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-CodeBuildCFNLintRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+      Path: /
+
+  CFNLintCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+        Name: build-CFTproject
+        Description: CodeBuild Project to validate CloudFormation templates using cnf-python-lint
+        Artifacts:
+          Type: CODEPIPELINE
+        Environment:
+            Type: LINUX_CONTAINER
+            ComputeType: BUILD_GENERAL1_SMALL
+            Image: aws/codebuild/standard:4.0
+            EnvironmentVariables:
+              - Name: CFNTemplatesPath
+                Value: ${CFNTemplatesPath}
+        ServiceRole:
+          !GetAtt CFNCodeBuildServiceRole.Arn
+        Source:
+            Type: CODEPIPELINE
+            BuildSpec: |
+              version: 0.2
+              phases:
+                install:
+                  commands:
+                    - pip install --upgrade pip
+                    - env && ls -l && python --version
+                    - pip install cfn-lint
+                    #- cfn-lint  ${CFNTemplatesPath}*.yml
+                    - cfn-lint *.yml *.json
+
+  DeploymentCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-CodeBuildDeployerRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+      Path: /
+      
+#================================================================================
+# CodePipeline stages
+#================================================================================
+
+  InfraDeploymentCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: TestCodePipeline-CFN
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactsS3Bucket
+      Stages:
+
+      ###codecommit stage
+        - Name: Source
+          Actions: 
+            - Name: CodecommitSource
+              ActionTypeId:
+                Category: Source 
+                Owner: AWS 
+                Version: 1 
+                Provider: CodeCommit
+              RunOrder: 1
+              OutputArtifacts:
+                - Name: !Ref BuildArtifacts
+              Configuration:
+                RepositoryName: AwsDemoCodePipeLine
+                BranchName: master
+                PollForSourceChanges: false 
+              RunOrder: 1
+
+      ###artifact validatation
+        - Name: Validate-CloudFormation-Templates
+          Actions:
+            - Name: CFN-Lint
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CFNLintCodeBuildProject
+              InputArtifacts:
+                - Name: !Ref BuildArtifacts
+              OutputArtifacts:
+                - Name: BuildvalidateOutput
+              RunOrder: 1
+
+        ###codebuild
+        - Name: Build
+          Actions:
+            - Name: validateInfra-build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CFNLintCodeBuildProject
+              InputArtifacts:
+                - Name: !Ref BuildArtifacts
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 2
+        
+        ###codedeploy
+
+        - Name: DeployStage
+          Actions:
+            - Name: Dev-Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: !Ref BuildArtifacts
+              OutputArtifacts:
+                - Name: devbuildoutput
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                #Capabilities: CAPABILITY_IAM
+                RoleArn: !GetAtt CloudformationRole.Arn
+                StackName: !Sub '${AWS::StackName}-DevStack'
+                TemplatePath: !Sub ${BuildArtifacts}::CFTCodePipeline.yml
+                TemplateConfiguration: !Sub ${BuildArtifacts}::config-dev.json
+                OutputFileName: 'devbuildoutput.json'
+              RunOrder: 1
+
+      RestartExecutionOnUpdate: true
+      #DisableInboundStageTransitions:  
+  
+     
+  
+Outputs:
+
+  
+  CodeCommitRepoName:
+    Value: !GetAtt CodeRepository.Name
+
+  CodeCommitRepoArn:
+    Value: !GetAtt CodeRepository.Arn
+
+  CodeCommitRepoCloneUrlHttp:
+    Value: !GetAtt CodeRepository.CloneUrlHttp
+
+  CodeCommitRepoCloneUrlSsh:
+    Value: !GetAtt CodeRepository.CloneUrlSsh
+
+  S3BucketArn:
+    Value: !GetAtt CodePipelineArtifactsS3Bucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-s3-bucket-arn"
+
+  S3BucketName:
+    Value: !Ref CodePipelineArtifactsS3BucketName
+
+  PipelineUrl:
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${InfraDeploymentCodePipeline}
+    
+    ==========================================================================================================================
+    
+    AWSTemplateFormatVersion: 2010-09-09
+Description: Creates EC2 servers
+
+Parameters:
+  TemplatePath:
+    Type: String
+    Description: S3Bucket Path where the templates are stored
+   
+  VPCID:
+    Type: String
+    Description: Enter a valid VPC Id
+   
+  PrivateSubnet1:
+    Type: String
+    Description: Enter a valid SubnetId of private subnet in AZ1
+   
+  PrivateSubnet2:
+    Type: String
+    Description: Enter a valid SubnetId of private subnet in AZ2
+   
+  PublicSubnet1:
+    Type: String
+    Description: Enter a valid SubnetId of public subnet in AZ1
+    
+  PublicSubnet2:
+    Type: String
+    Description: Enter a valid SubnetId of public subnet in AZ2
+    
+   #KeyPair:
+   # Type: "AWS::EC2::KeyPair::KeyName"
+    #Description: Enter a valid KeyPair Name
+  AMIId:
+    Type: String
+    Description: Enter a valid AMI ID to launch the instance
+    
+  InstanceType:
+    Type: String
+    Description: Enter one of the possible instance type for web server
+    
+  Environment:
+    Type: String
+    Description: Select the appropriate environment
+    
+    
+
+Resources:
+  #####VPC Group
+  #VPCStack:
+   # Type: "AWS::CloudFormation::Stack"
+    #Properties:
+     # TemplateURL:
+      #  Fn::Sub: "https://${TemplatePath}.s3.amazonaws.com/vpc-stack.yml"
+      #Parameters:
+       # VPCID: !Ref VPCID
+        #Environment: !Ref Environment
+        #PublicSubnetA: !Ref PublicSubnet1
+        #PublicSubnetB: !Ref PublicSubnet2
+        #PrivateSubnetA: !Ref PrivateSubnet1
+        #PrivateSubnetB: !Ref PrivateSubnet2
+      #Tags:
+       # - Key: Name
+       #   Value: VPCGroupStack
+
+  ####Security Group
+  SGStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL:
+        Fn::Sub: "https://${TemplatePath}.s3.amazonaws.com/sg-stack.yml"
+      Parameters:
+        VPCID: !Ref VPCID
+        Environment: !Ref Environment
+      Tags:
+        - Key: Name
+          Value:   SecurityGroupStack
+
+  ####Application Ec2 instances group
+  APPStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL:
+        Fn::Sub: "https://${TemplatePath}.s3.amazonaws.com/app-stack.yml"
+      Parameters:
+        VPCID: !Ref VPCID
+        Environment: !Ref Environment
+        PublicSubnetA: !Ref PublicSubnet1
+        PublicSubnetB: !Ref PublicSubnet2
+        PrivateSubnetA: !Ref PrivateSubnet1
+        PrivateSubnetB: !Ref PrivateSubnet2
+        AMIId: !Ref AMIId
+        InstanceType: !Ref InstanceType
+        APPSG: !GetAtt SGStack.Outputs.APPSGID
+        #LBSG: !GetAtt SGStack.Outputs.ALBSGID  
+      Tags:
+        - Key: Name
+          Value: ApplicationStack
+          
+  ####Application Loadbalancer group  
+  ALBStack:
+    Type: "AWS::CloudFormation::Stack"
+    Properties:
+      TemplateURL:
+        Fn::Sub: "https://${TemplatePath}.s3.amazonaws.com/alb-stack.yml"
+      Parameters:
+        VPCID: !Ref VPCID
+        Environment: !Ref Environment
+        PublicSubnetA: !Ref PublicSubnet1
+        PublicSubnetB: !Ref PublicSubnet2
+        PrivateSubnetA: !Ref PrivateSubnet1
+        PrivateSubnetB: !Ref PrivateSubnet2
+        #APPSG: !GetAtt SGStack.Outputs.APPSGID
+        LBSG: !GetAtt SGStack.Outputs.ALBSGID
+        AppInstance1: !GetAtt APPStack.Outputs.AppInstance1
+        AppInstance2: !GetAtt  APPStack.Outputs.AppInstance2
+      Tags:
+        - Key: Name
+          Value: LoadBalancerStack
+
+  
+Outputs:
+  Stackinfo:
+    Description: Ec2 Main stack info
+    Value:
+      !Ref APPStack
+  AppInstance1:
+    Description: AppInstance1  
+    Value:
+      !GetAtt APPStack.Outputs.AppInstance1
+  AppInstance2:
+    Description: AppInstance2  
+    Value:
+      !GetAtt APPStack.Outputs.AppInstance2
+  Ec2SecurityGroupID:
+    Description: ec2 SG 
+    Value:
+      !GetAtt SGStack.Outputs.APPSGID
+  ALBSecurityGroupID:
+    Description: ALB SG 
+    Value:
+      !GetAtt SGStack.Outputs.ALBSGID
+  ALB:
+    Description: ALB
+    Value:
+      !GetAtt ALBStack.Outputs.ALBDNSName
+  
+  
+         ==========================================================================================
+         buildspec.yml
+         
+         version: 0.2
+
+environment_variables:
+  plaintext:
+    TEMPLATE_FILES: |
+      ec2.yml
+    CONFIG_FILES: |
+      deployconfig.json
+
+#https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html#runtime-versions-buildspec-file
+phases:
+  install:
+    runtime-versions:
+      nodejs: 12.x
+    commands:
+      npm install jsonlint -g
+  pre_build:
+    commands:
+      - echo "Validating CFN templates"
+      - |
+        for cfn_template in $TEMPLATE_FILES; do
+          echo "Validating CloudFormation template file $cfn_template"
+          aws cloudformation validate-template --template-body file://$cfn_template
+        done
+      - |
+        for conf in $CONFIG_FILES; do
+          echo "Validating CFN parameters config file $conf"
+          jsonlint -q $conf
+        done
+  build:
+    commands:
+      - echo "do nothing"
+artifacts:
+  files:
+    - ec2.yml
+    - deployconfig.json
+    
+    =============================================================
+    lamda-cft
+    #########lambda function for ec2 create and delete ############
+Description: Create a variable number of EC2 instance resources.
+Parameters:
+  InstanceCount:
+    Description: Number of EC2 instances (must be between 1 and 10).
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 2
+    ConstraintDescription: Must be a number between 1 and 10.
+  ImageId:
+    Description: Image ID to launch EC2 instances.
+    Type: AWS::EC2::Image::Id
+    # amzn-ami-hvm-2016.09.1.20161221-x86_64-gp2
+    Default: ami-7as9asfasfar3
+  InstanceType:
+    Description: Instance type to launch EC2 instances.
+    Type: String
+    Default: t2.micro
+
+  
+
+Resources:
+
+  EC2Instances:
+    Type: Custom::EC2Instances
+    Properties:
+      ServiceToken: !GetAtt EC2InstancesFunction.Arn
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      
+
+  EC2InstancesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import json
+          import boto3
+          import cfnresponse
+
+          client = boto3.client('ec2')
+         
+          def lambda_handler(event, context):
+              print('Received request:\n%s' % json.dumps(event, indent=4))
+              response_data = {}
+
+              resource_properties = event['ResourceProperties']
+
+              if event['RequestType'] == "Create":
+                  try:
+                     
+                      response = client.run_instances(
+                        ImageId=resource_properties['ImageId'],
+                        InstanceType=resource_properties['InstanceType'],
+                        #KeyName=resource_properties['KeyName'],
+                        MaxCount=2,
+                        MinCount=1,
+                        TagSpecifications=[
+                          {
+                              'ResourceType': 'instance',
+                              'Tags': [
+                                 
+                                  {
+                                      'Key': 'Name',
+                                      'Value': 'test2333'
+                                  }
+                                  
+                              ]
+                           },
+                          ]
+                        )
+                     
+
+                     #response_data["InstanceId"] = response['Instances'][0]['InstanceId']
+                     
+
+                  
+              #elif event['RequestType'] == 'Delete':
+                 #######delete functionlity
+
+                  except:
+                     cfnresponse.send(event, context, cfnresponse.FAILED, {})
+                     raise
+                  else:
+                     cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Instances': response['Instances'][0]['InstanceId']})
+
+              #elif event['RequestType'] == 'Delete':
+                   # cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+             
+
+      Runtime: python3.7
+      Timeout: 300
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: {Service: [lambda.amazonaws.com]}
+          Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: EC2Policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - 'ec2:*'
+              Resource: ['*']
+Outputs:
+  Instances:
+    Value: !Join [',', !GetAtt EC2Instances.Instances]
+=====================================================================
+python lamda
+import json
+import boto3
+
+client = boto3.client('ec2')
+ec2 = boto3.resource('ec2')
+
+def lambda_handler(event, context):
+    
+    
+    
+    
+    
+
+    #print("********** create Instances Begin***********")
+    createInstances = createInstanceslist()
+
+def createInstanceslist(): 
+    newMachineName=[]
+    response = client.run_instances(
+                        ImageId='ami-0sfhsfwer232323',
+                        InstanceType='t2.micro',
+                       
+                        MaxCount=2,
+                        MinCount=1,
+                        TagSpecifications=[
+                          {
+                              'ResourceType': 'instance',
+                              'Tags': [
+                                  {
+                                      'Key': 'Environment',
+                                      'Value': 'dev'
+                                  }
+                              ]
+                          },
+                        ]
+                    
+                      )
+                      
+    print("New instances created.")
+    instance_list = response['Instances']
+    ###count the existing instances    
+    runningInstances = listOutTheRunningInstances()
+    if(len(runningInstances) > 0):
+        print("running total isntances----->",listOutTheRunningInstances)
+        
+        newMachineName = runningInstances[-1]
+        print("My  last running machine name is ---->",newMachineName)  
+        newMachinecount = findoutLastMachineName(newMachineName)
+        print("My  new running machine count is ---->", str(newMachinecount)) 
+    else:
+        newMachinecount = 1
+        print("No machines running machine count is ---->", str(newMachinecount)) 
+
+    if (len(instance_list) > 0):
+        for keyindex,instance in enumerate(instance_list):
+            instanceId = instance["InstanceId"]
+            print("---->"+instanceId)
+            
+           
+            newindex = keyindex + int(newMachinecount)
+            print("my new index----->",newindex)
+            status = createTags(newindex,instanceId)
+    #return instance_id
+ 
+ 
+def listOutTheRunningInstances(): 
+   
+    print("----------descriing instances---------------------------")
+    List1 = []
+    response = client.describe_instances(
+        Filters=[{
+             'Name': 'tag:Environment',
+             'Values': ['dev*']
+            },
+            {
+             'Name': 'instance-state-name',
+             'Values': ['running']
+            }])
+    for reservation in response["Reservations"]:
+        instances_count=reservation["Instances"]
+        for keyindex,instance in enumerate(reservation["Instances"]):
+            instanceId = instance["InstanceId"]
+            awsEC2Tags = instance["Tags"]
+            for instanceTag in awsEC2Tags:
+                if instanceTag["Key"] == "Name":
+                    ec2Tag = instanceTag["Value"]
+                    print("ec2tag-------" + str(ec2Tag))
+                    List1.append(ec2Tag)
+                    
+                    List1.sort()
+                   
+    print("after sort listong-------" + str(List1))        
+    return List1 
+    
+def createTags(keyPos,instanceId):
+    createTag = client.create_tags(
+        Resources=[instanceId],
+        Tags=[{
+            'Key': 'Environment',
+            'Value': "Evaluation",
+        },
+        {
+            'Key': 'Product',
+            'Value': "Convey",
+        },
+        {
+            'Key': 'Name',
+            'Value': "tomcat"+"-"+str(keyPos),
+        },
+        ]
+    )
+#find out the last machine name       
+def findoutLastMachineName(currentMachineName):
+    oldMachineName = currentMachineName[0:-1]
+    oldMachineNum = currentMachineName[-1:]
+    newMachineNumber = increamentMachineNum(oldMachineNum)
+    #("old machine number----->>",oldMachineNum)
+    #print("new machine number----->>",newMachineNumber)
+    
+    return newMachineNumber
+    
+#Increament the machine number plus one
+def increamentMachineNum(increamentMachineNumber):
+    newMachineNumber = str(int(increamentMachineNumber)+1).zfill(len(increamentMachineNumber))
+    #print("new increment number---->", newMachineNumber )
+    return newMachineNumber
+==================================================================
+pyhton custom resource
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation to set up a custom CloudFormation resource with Lambda.
+Parameters:
+  LambdaRuntime:
+    Description: The Lambda runtime to use
+    Type: String
+    Default: python3.8
+
+  S3Bucket:
+    Description: The name of the bucket that contains your packaged source
+    Type: String
+    Default: lamda-test-ec2
+
+  S3Key:
+    Description: The name of the ZIP package
+    Type: String
+    Default: ec2-instances.zip
+
+  ImageId:
+    Description: AMI ID
+    Type: String
+    Default: ami-0234723472dsdfsdf
+
+  InstanceType:
+    Description: The name of the bucket that contains your packaged source
+    Type: String
+    Default: t2.micro
+
+Resources:
+  ###custom function to call lamda python code 
+  EC2Instances:
+    Type: Custom::EC2Instances
+    Properties:
+      ServiceToken: !GetAtt EC2InstancesFunction.Arn
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+
+  ###execituon call python 
+  EC2InstancesFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-${AWS::Region}-ec2-instances-LambdaFunction'
+      Code:
+        S3Bucket: !Ref 'S3Bucket'
+        S3Key: !Ref 'S3Key'
+      Handler: ec2-instances.handler
+      Role: !GetAtt 'LambdaExecutionRole.Arn'
+      Runtime: !Ref 'LambdaRuntime'
+      Timeout: 300
+      Tags:
+      - Key: Name
+        Value: !Sub Lambda-ec2- ${AWS::StackName}
+
+  ##role for permissions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - ec2:*
+            Resource: "*"
+#Outputs:
+ # EC2InstancesArn:
+  #  Description: The arn of the custom resource function.
+   # Value: !GetAtt 'EC2Instances.Name'
+   ==========================================================================
+   
+   python fucntion
+   import json
+import boto3
+import urllib3
+import random
+import time
+
+SUCCESS = "SUCCESS"
+FAILED = "FAILED"
+
+http = urllib3.PoolManager()
+
+client = boto3.client('ec2')
+
+
+def handler(event, context):
+    print('Received request:\n%s' % json.dumps(event, indent=4))
+    responseData = {}
+
+    resource_properties = event['ResourceProperties']
+
+    if event['RequestType'] == "Create":
+        try:
+
+            response = client.run_instances(
+                ImageId=resource_properties['ImageId'],
+                InstanceType=resource_properties['InstanceType'],
+                #KeyName=resource_properties['KeyName'],
+                MaxCount=2,
+                MinCount=1,
+                TagSpecifications=[
+                    {
+                        'ResourceType': 'instance',
+                                'Tags': [
+
+                                    {
+                                      'Key': 'Environment',
+                                      'Value': 'Evaltest'
+                                  }
+
+                                    ]
+                        },
+                ]
+                )
+
+            print("New instances created.=============")
+            instance_list = response['Instances']
+            ###count the existing instances
+            runningInstances = listOutTheRunningInstances()
+            if(len(runningInstances) > 0):
+                print("running total isntances----->", listOutTheRunningInstances)
+
+                newMachineName = runningInstances[-1]
+                print("My  last running machine name is ---->", newMachineName)
+                newMachinecount = findoutLastMachineName(newMachineName)
+                print("My  new running machine count is ---->", str(newMachinecount))
+            else:
+                newMachinecount = 1
+                print("No machines running machine count is ---->", str(newMachinecount))
+
+            if (len(instance_list) > 0):
+                for keyindex, instance in enumerate(instance_list):
+                    instanceId = instance["InstanceId"]
+                    print("---->"+instanceId)
+
+                    newindex = keyindex + int(newMachinecount)
+                    print("my new index----->", newindex)
+                    status = createTags(newindex, instanceId)
+            #response_data["InstanceId"] = response['Instances'][0]['InstanceId']
+
+            responseValue = runningInstances
+
+            responseData['Data'] = responseValue
+        except:
+            #cfnresponse.send(event, context, 'FAILED', response_data, 'CustomResourcePhysicalID')
+            send(event, context, 'FAILED', responseData, physicalResourceId=None, noEcho=False)
+            raise
+        else:
+            #cfnresponse.send(event, context, 'SUCCESS', response_data, 'CustomResourcePhysicalID')
+            send(event, context, 'SUCCESS', responseData, physicalResourceId=None, noEcho=False)
+
+
+def listOutTheRunningInstances(): 
+   
+    print("----------descriing instances---------------------------")
+    List1 = []
+    response = client.describe_instances(
+        Filters=[{
+            'Name': 'tag:Environment',
+            'Values': ['Evaltest*']
+            },
+            {
+            'Name': 'instance-state-name',
+            'Values': ['running']
+            }])
+    for reservation in response["Reservations"]:
+        instances_count=reservation["Instances"]
+        for keyindex,instance in enumerate(reservation["Instances"]):
+            instanceId = instance["InstanceId"]
+            awsEC2Tags = instance["Tags"]
+            for instanceTag in awsEC2Tags:
+                if instanceTag["Key"] == "Name":
+                    ec2Tag = instanceTag["Value"]
+                    print("ec2tag-------" + str(ec2Tag))
+                    List1.append(ec2Tag)
+                    
+                    List1.sort()
+                
+    print("after sort listong-------" + str(List1))        
+    return List1 
+
+def createTags(keyPos,instanceId):
+    createTag = client.create_tags(
+        Resources=[instanceId],
+        Tags=[{
+            'Key': 'Environment',
+            'Value': "Evaltest",
+        },
+        {
+            'Key': 'Product',
+            'Value': "Lamda",
+        },
+        {
+            'Key': 'Name',
+            'Value': "tomcat"+"-"+str(keyPos),
+        },
+        ])
+
+#find out the last machine name       
+def findoutLastMachineName(currentMachineName):
+    oldMachineName = currentMachineName[0:-1]
+    oldMachineNum = currentMachineName[-1:]
+    newMachineNumber = increamentMachineNum(oldMachineNum)
+    #("old machine number----->>",oldMachineNum)
+    #print("new machine number----->>",newMachineNumber)
+    
+    return newMachineNumber
+    
+#Increament the machine number plus one
+def increamentMachineNum(increamentMachineNumber):
+    newMachineNumber = str(int(increamentMachineNumber)+1).zfill(len(increamentMachineNumber))
+    #print("new increment number---->", newMachineNumber )
+    return newMachineNumber
+
+
+def send(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False):
+    responseUrl = event['ResponseURL']
+
+    print(responseUrl)
+
+    responseBody = {}
+    responseBody['Status'] = responseStatus
+    responseBody['Reason'] = 'See the details in CloudWatch Log Stream: ' + \
+        context.log_stream_name
+    responseBody['PhysicalResourceId'] = physicalResourceId or context.log_stream_name
+    responseBody['StackId'] = event['StackId']
+    responseBody['RequestId'] = event['RequestId']
+    responseBody['LogicalResourceId'] = event['LogicalResourceId']
+    responseBody['NoEcho'] = noEcho
+    responseBody['Data'] = responseData
+
+    json_responseBody = json.dumps(responseBody)
+
+    print("Response body:\n" + json_responseBody)
+
+    headers = {
+        'content-type': '',
+        'content-length': str(len(json_responseBody))
+    }
+
+    try:
+        response = http.request(
+            'PUT', responseUrl, body=json_responseBody, headers=headers)
+
+        print("Status code: " + response.status)
+    except Exception as e:
+        print("send(..) failed executing http.request(..): ", str(e))
+=================================================================================
 
