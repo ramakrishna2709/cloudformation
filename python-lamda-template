@@ -1,0 +1,611 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation to set up a custom CloudFormation resource with Lambda.
+Parameters:
+  LambdaRuntime:
+    Description: The Lambda runtime to use
+    Type: String
+    Default: python3.8
+
+  Environment:
+    Type: String
+    Description: Specifies the application environment.
+
+  VPCID:
+    Type: String
+    Description: Specifies the VPCID.
+
+  S3BucketName:
+    Description: The name of the bucket that contains your packaged source
+    Type: String
+    
+  S3Key:
+    Description: The name of the ZIP package
+    Type: String
+    Default: ec2-instances.zip
+
+  AmazonAMI:
+    Description: AMI ID
+    Type: AWS::EC2::Image::Id
+ 
+  InstanceType:
+    Description: Tomcat instance type
+    Type: String
+
+  PublicSubnets:
+    Description: list of public subnets
+    Type: String
+
+  InstanceName:
+    Description: InstanceName
+    Type: String
+
+  SSHKeyName:
+    Description: SSHKeyName
+    Type: String
+
+  DefaultSecurityGroupName:
+    Description: DefaultSecurityGroupName
+    Type: String
+
+  APPTypeCount:
+    Description: instances count
+    Type: String
+
+  APPName:
+    Description: instances name
+    Type: String
+
+
+Resources:
+  ###custom function to call lamda python code 
+  EC2Instances:
+    Type: Custom::EC2Instances
+    Properties:
+      ServiceToken: !GetAtt EC2InstancesFunction.Arn
+      Environment: !Ref Environment
+      VPCID: !Ref VPCID
+      ImageId: !Ref AmazonAMI
+      SSHKeyName: !Ref SSHKeyName
+      PublicSubnets: !Ref PublicSubnets
+      InstanceName: !Ref InstanceName
+      InstanceType: !Ref InstanceType
+      DefaultSecurityGroupName: !Ref DefaultSecurityGroupName
+      APPTypeCount: !Ref APPTypeCount
+      APPName: !Ref APPName
+
+
+
+  ###execituon call python 
+  EC2InstancesFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-${AWS::Region}-ec2-instances-LambdaFunction'
+      Code:
+        S3Bucket: !Ref 'S3BucketName'
+        S3Key: !Ref 'S3Key'
+      Handler: ec2-instances.handler
+      Role: !GetAtt 'LambdaExecutionRole.Arn'
+      Runtime: !Ref 'LambdaRuntime'
+      Timeout: 300
+      Tags:
+      - Key: Name
+        Value: !Sub Lambda-ec2- ${AWS::StackName}
+
+  ##role for permissions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - ec2:*
+            Resource: "*"
+===========================================================================================
+pyhton fucntions
+
+import json
+import boto3
+import urllib3
+import random
+import time
+
+SUCCESS = "SUCCESS"
+FAILED = "FAILED"
+
+http = urllib3.PoolManager()
+
+client = boto3.client('ec2')
+
+
+def lambda_handler(event, context):
+    print('Received request:\n%s' % json.dumps(event, indent=4))
+    Type = 'UI,Tomcat'
+    TomcatCount = 1
+    UICount = 1
+    data = Type.split(',')
+    print(data[0])
+    print(data[1])
+
+    if ((data[0] == "UI") and (UICount > 0)):
+       print("ec2 type", data[0], UICount)
+       count_instances = create_instances(data[0], UICount)
+
+    if ((data[1] == "Tomcat") and (TomcatCount > 0)):
+        print("ec2 type", data[1], TomcatCount)
+        count_instances = create_instances(data[1], TomcatCount)
+
+
+def create_instances(Type, InstanceCount):
+    response = client.run_instances(
+        ImageId='ami-2348sfdjsfjsjf',
+        InstanceType='t2.micro',
+        #KeyName=resource_properties['SSHKeyName'],
+        MaxCount=InstanceCount,
+        MinCount=1,
+        #SecurityGroupIds=[sg_id],
+        SubnetId='subnet-234235288234',
+        TagSpecifications=[
+            {
+                'ResourceType': 'instance',
+                'Tags': [
+
+                    {
+                                'Key': 'Name',
+                                'Value': Type
+                    }
+
+                ]
+            },
+        ]
+    )
+
+    print("New instances created.=============")
+    instance_list = response['Instances']
+    print(instance_list)
+===========================================================
+python fucntion sg
+
+import json
+import boto3
+import urllib3
+import random
+import time
+
+SUCCESS = "SUCCESS"
+FAILED = "FAILED"
+
+http = urllib3.PoolManager()
+
+client = boto3.client('ec2')
+
+
+def lambda_handler(event, context):
+    print('Received request:\n%s' % json.dumps(event, indent=4))
+    sg_id = securitygroup()
+    responseData = {}
+
+    response = client.run_instances(
+        ImageId='ami-02425sdfsgsf',
+        InstanceType='t2.micro',
+        #KeyName=resource_properties['SSHKeyName'],
+        MaxCount=1,
+        MinCount=1,
+        SecurityGroupIds=[sg_id],
+        SubnetId='subnet-2234252615225',
+        TagSpecifications=[
+            {
+                'ResourceType': 'instance',
+                'Tags': [
+
+                    {
+                                'Key': 'Name',
+                                'Value': 'tomcat-test'
+                    }
+
+                ]
+            },
+        ]
+    )
+
+    print("New instances created.=============")
+    instance_list = response['Instances']
+    print(instance_list)
+
+
+def securitygroup():
+    response1 = client.create_security_group(
+        Description='My security group',
+        GroupName='my-testec2-group',
+        VpcId='vpc-32sf234sdf234',
+        TagSpecifications=[
+            {
+                'ResourceType': 'security-group',
+                'Tags': [
+                                {
+                                    'Key': 'Name',
+                                    'Value': 'testec2-sg'
+                                },
+                ]
+            },
+        ],
+    )
+
+    print("sgresponse----", response1)
+    print("sgid======", response1['GroupId'])
+    return response1['GroupId']
+=================================================
+pyhton ec2-fucntion
+
+import json
+import boto3
+import urllib3
+import random
+import time
+
+SUCCESS = "SUCCESS"
+FAILED = "FAILED"
+
+http = urllib3.PoolManager()
+
+client = boto3.client('ec2')
+
+
+def handler(event, context):
+    print('Received request:\n%s' % json.dumps(event, indent=4))
+    sg_id = securitygroup()
+    responseData = {}
+
+    resource_properties = event['ResourceProperties']
+    ImageId = resource_properties['ImageId'],
+    InstanceType = resource_properties['InstanceType'],
+    KeyName = resource_properties['SSHKeyName'],
+    PublicSubnets = resource_properties['PublicSubnets'],
+    InstanceName = resource_properties['InstanceName'],
+    APPName = resource_properties['APPName'],
+
+    SGName = resource_properties['DefaultSecurityGroupName'],
+
+    APPTypeCount = resource_properties['APPTypeCount'],
+   
+    SecurityGroupIds=[sg_id],
+
+   
+
+    if event['RequestType'] == "Create":
+        try:
+            APPTypeCount = resource_properties['APPTypeCount']
+            my_list = APPTypeCount.split(",")
+            print("list", my_list)
+            for type in my_list:
+                data = type.split('-')
+                count = data[1]
+                technology = data[0]
+                Name = InstanceName + "-" + APPName + "-" + technology + "-" + str(count)
+               
+                create_instances(AMIId, Name, Instance_Type, Key_Name, Public_Subnets,count,SGID)
+        except:
+            #cfnresponse.send(event, context, 'FAILED', response_data, 'CustomResourcePhysicalID')
+            send(event, context, 'FAILED', responseData, physicalResourceId=None, noEcho=False)
+            raise
+        else:
+            #cfnresponse.send(event, context, 'SUCCESS', response_data, 'CustomResourcePhysicalID')
+            send(event, context, 'SUCCESS', responseData, physicalResourceId=None, noEcho=False)
+
+
+def create_instances(AMIId, Name, Instance_Type, Key_Name, Public_Subnets, count,SGID):
+    response = client.run_instances(
+        ImageId=AMIId,
+        InstanceType=Instance_Type,
+        KeyName=Key_Name,
+        MaxCount=count,
+        MinCount=1,
+        SecurityGroupIds=[SGID],
+        TagSpecifications=[
+            {
+                'ResourceType': 'instance',
+                        'Tags': [
+
+                            {
+                                'Key': 'Environment',
+                                'Value': 'devtest'
+                            },
+                            {
+                                'Key': 'Name',
+                                'Value': Name
+                            },
+                           
+
+                            ]
+                },
+        ]
+        )
+
+    print("New instances created.=============")
+    instance_list = response['Instances']
+    ###count the existing instances
+    runningInstances = listOutTheRunningInstances()
+    if(len(runningInstances) > 0):
+        print("running total isntances----->", listOutTheRunningInstances)
+
+        newMachineName = runningInstances[-1]
+        print("My  last running machine name is ---->", newMachineName)
+        newMachinecount = findoutLastMachineName(newMachineName)
+        print("My  new running machine count is ---->", str(newMachinecount))
+    else:
+        newMachinecount = 1
+        print("No machines running machine count is ---->", str(newMachinecount))
+
+    if (len(instance_list) > 0):
+        for keyindex, instance in enumerate(instance_list):
+            instanceId = instance["InstanceId"]
+            print("---->"+instanceId)
+
+            newindex = keyindex + int(newMachinecount)
+            print("my new index----->", newindex)
+            status = createTags(newindex, instanceId)
+    #response_data["InstanceId"] = response['Instances'][0]['InstanceId']
+
+    responseValue = runningInstances
+
+    responseData['Data'] = responseValue
+
+
+def listOutTheRunningInstances(): 
+   
+    print("----------descriing instances---------------------------")
+    List1 = []
+    response = client.describe_instances(
+        Filters=[{
+            'Name': 'tag:Environment',
+            'Values': ['devtest*']
+            },
+            {
+            'Name': 'instance-state-name',
+            'Values': ['running']
+            }])
+    for reservation in response["Reservations"]:
+        instances_count=reservation["Instances"]
+        for keyindex,instance in enumerate(reservation["Instances"]):
+            instanceId = instance["InstanceId"]
+            awsEC2Tags = instance["Tags"]
+            for instanceTag in awsEC2Tags:
+                if instanceTag["Key"] == "Name":
+                    ec2Tag = instanceTag["Value"]
+                    print("ec2tag-------" + str(ec2Tag))
+                    List1.append(ec2Tag)
+                    
+                    List1.sort()
+                
+    print("after sort listong-------" + str(List1))        
+    return List1 
+
+def createTags(keyPos,instanceId):
+    createTag = client.create_tags(
+        Resources=[instanceId],
+        Tags=[{
+            'Key': 'Environment',
+            'Value': "devtest",
+        },
+        {
+            'Key': 'Product',
+            'Value': "Lamda",
+        },
+        {
+            'Key': 'Name',
+            'Value': "tomcat"+"-"+str(keyPos),
+        },
+        ])
+
+#find out the last machine name       
+def findoutLastMachineName(currentMachineName):
+    oldMachineName = currentMachineName[0:-1]
+    oldMachineNum = currentMachineName[-1:]
+    newMachineNumber = increamentMachineNum(oldMachineNum)
+    return newMachineNumber
+    
+#Increament the machine number plus one
+def increamentMachineNum(increamentMachineNumber):
+    newMachineNumber = str(int(increamentMachineNumber)+1).zfill(len(increamentMachineNumber))
+    return newMachineNumber
+
+#security group
+def securitygroup():
+    response1 = client.create_security_group(
+        Description='My security group',
+        GroupName='my-testec2-group',
+        VpcId='vpc-23424sfd2342f23',
+        TagSpecifications=[
+            {
+                'ResourceType': 'security-group',
+                'Tags': [
+                                {
+                                    'Key': 'Name',
+                                    'Value': 'testec2-sg'
+                                },
+                ]
+            },
+        ],
+    )
+
+    print("sgresponse----", response1)
+    print("sgid======", response1['GroupId'])
+    return response1['GroupId']
+
+def send(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False):
+    responseUrl = event['ResponseURL']
+
+    print(responseUrl)
+
+    responseBody = {}
+    responseBody['Status'] = responseStatus
+    responseBody['Reason'] = 'See the details in CloudWatch Log Stream: ' + \
+        context.log_stream_name
+    responseBody['PhysicalResourceId'] = physicalResourceId or context.log_stream_name
+    responseBody['StackId'] = event['StackId']
+    responseBody['RequestId'] = event['RequestId']
+    responseBody['LogicalResourceId'] = event['LogicalResourceId']
+    responseBody['NoEcho'] = noEcho
+    responseBody['Data'] = responseData
+
+    json_responseBody = json.dumps(responseBody)
+
+    print("Response body:\n" + json_responseBody)
+
+    headers = {
+        'content-type': '',
+        'content-length': str(len(json_responseBody))
+    }
+
+    try:
+        response = http.request(
+            'PUT', responseUrl, body=json_responseBody, headers=headers)
+
+        print("Status code: " + response.status)
+    except Exception as e:
+        print("send(..) failed executing http.request(..): ", str(e))
+================================================================================
+
+ec2lamada tempalte
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation to set up a custom CloudFormation resource with Lambda.
+Parameters:
+  LambdaRuntime:
+    Description: The Lambda runtime to use
+    Type: String
+    Default: python3.8
+
+  Environment:
+    Type: String
+    Description: Specifies the application environment.
+
+  VPCID:
+    Type: String
+    Description: Specifies the VPCID.
+
+  S3BucketName:
+    Description: The name of the bucket that contains your packaged source
+    Type: String
+    
+  S3Key:
+    Description: The name of the ZIP package
+    Type: String
+    Default: ec2-instances.zip
+
+  AmazonAMI:
+    Description: AMI ID
+    Type: AWS::EC2::Image::Id
+ 
+  TomcatInstanceType:
+    Description: ec2 instance type
+    Type: String
+
+  PublicSubnets:
+    Description: list of public subnets
+    Type: String
+
+  InstanceName:
+    Description: InstanceName
+    Type: String
+
+  SSHKeyName:
+    Description: SSHKeyName
+    Type: String
+
+  TomcatSecurityGroupName:
+    Description: TomcatSecurityGroupName
+    Type: String
+
+  TomcatInstanceCount:
+    Description: instances count
+    Type: String
+
+  
+
+Resources:
+  ###custom function to call lamda python code 
+  EC2Instances:
+    Type: Custom::EC2Instances
+    Properties:
+      ServiceToken: !GetAtt EC2InstancesFunction.Arn
+      ImageId: !Ref AmazonAMI
+      InstanceType: !Ref TomcatInstanceType
+      Environment: !Ref Environment
+      VPCID: !Ref VPCID
+      #SSHKeyName: !Ref SSHKeyName
+      PublicSubnets: !Ref PublicSubnets
+      TomcatSecurityGroupName: !Ref TomcatSecurityGroupName
+      InstanceName: !Ref InstanceName
+      TomcatInstanceCount: !Ref TomcatInstanceCount
+
+  ###execituon call python 
+  EC2InstancesFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-${AWS::Region}-ec2-instances-LambdaFunction'
+      Code:
+        S3Bucket: !Ref 'S3BucketName'
+        S3Key: !Ref 'S3Key'
+      Handler: ec2-instances.handler
+      Role: !GetAtt 'LambdaExecutionRole.Arn'
+      Runtime: !Ref 'LambdaRuntime'
+      Timeout: 300
+      Tags:
+      - Key: Name
+        Value: !Sub Lambda-ec2- ${AWS::StackName}
+
+  ##role for permissions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - ec2:*
+            Resource: "*"
+#Outputs:
+ # EC2InstancesArn:
+  #  Description: The arn of the custom resource function.
+   # Value: !GetAtt 'EC2Instances.Name'
+   
